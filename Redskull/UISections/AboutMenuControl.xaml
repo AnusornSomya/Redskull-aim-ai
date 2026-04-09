@@ -1,0 +1,102 @@
+<UserControl x:Class="Redskull.Controls.AboutMenuControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d">
+    <ScrollViewer x:Name="AboutMenu"
+                  VerticalScrollBarVisibility="Auto"
+                  PanningMode="VerticalOnly">
+        <StackPanel Margin="20">
+            <Border Background="#15FFFFFF"
+                    BorderBrush="#3FFFFFFF"
+                    BorderThickness="1"
+                    CornerRadius="5"
+                    Padding="24"
+                    Margin="0,0,0,16">
+                <StackPanel HorizontalAlignment="Center">
+                    <Image Source="/Assets/icon.ico"
+                           Width="72"
+                           Height="72"
+                           Margin="0,0,0,14" />
+                    <TextBlock Text="REDSKULL AIM AI"
+                               FontFamily="{StaticResource Atkinson Hyperlegible}"
+                               FontSize="24"
+                               FontWeight="Bold"
+                               Foreground="White"
+                               HorizontalAlignment="Center" />
+                    <TextBlock Text="Local-only build"
+                               FontFamily="{StaticResource Atkinson Hyperlegible}"
+                               FontSize="12"
+                               Foreground="#99FFFFFF"
+                               HorizontalAlignment="Center"
+                               Margin="0,2,0,8" />
+                    <Border Background="{DynamicResource ThemeColor}"
+                            CornerRadius="5"
+                            Padding="12,4"
+                            HorizontalAlignment="Center">
+                        <Label Content="v2.5.0"
+                               FontFamily="{StaticResource Atkinson Hyperlegible}"
+                               FontSize="11"
+                               Foreground="White"
+                               Padding="0" />
+                    </Border>
+                    <Label x:Name="AboutSpecs"
+                           Content="Loading system specs..."
+                           FontFamily="{StaticResource Atkinson Hyperlegible}"
+                           Foreground="#60FFFFFF"
+                           FontSize="10"
+                           HorizontalAlignment="Center"
+                           Margin="0,12,0,0"
+                           Padding="0" />
+                </StackPanel>
+            </Border>
+
+            <Border Background="#10FFFFFF"
+                    BorderBrush="#3FFFFFFF"
+                    BorderThickness="1"
+                    CornerRadius="5"
+                    Padding="20"
+                    Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="ระบบภายนอก"
+                               FontFamily="{StaticResource Atkinson Hyperlegible}"
+                               FontSize="10"
+                               FontWeight="Bold"
+                               Foreground="#60FFFFFF"
+                               Margin="0,0,0,12"
+                               HorizontalAlignment="Center" />
+                    <TextBlock Text="เวอร์ชันนี้ไม่มีระบบเช็กอัปเดตอัตโนมัติ ไม่มีลิงก์ออกภายนอก และไม่มีเมนูดาวน์โหลดไฟล์จากภายนอก"
+                               FontFamily="{StaticResource Atkinson Hyperlegible}"
+                               FontSize="11"
+                               Foreground="#CCFFFFFF"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center" />
+                </StackPanel>
+            </Border>
+
+            <Border Background="#08FFFFFF"
+                    BorderBrush="#3FFFFFFF"
+                    BorderThickness="1"
+                    CornerRadius="5"
+                    Padding="16">
+                <StackPanel>
+                    <TextBlock Text="หมายเหตุ"
+                               FontFamily="{StaticResource Atkinson Hyperlegible}"
+                               FontSize="10"
+                               FontWeight="Bold"
+                               Foreground="#60FFFFFF"
+                               Margin="0,0,0,8"
+                               HorizontalAlignment="Center" />
+                    <TextBlock Text="ถ้าจะใช้วิธีขยับเมาส์แบบไดรเวอร์พิเศษ ให้เตรียมไฟล์หรือโปรแกรมที่ต้องใช้ไว้ในเครื่องด้วยตัวเองก่อน แล้วค่อยกลับมาเลือกใช้งาน"
+                               FontFamily="{StaticResource Atkinson Hyperlegible}"
+                               FontSize="10"
+                               Foreground="#AAFFFFFF"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
+

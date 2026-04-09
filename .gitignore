@@ -1,0 +1,43 @@
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+
+# Publish output / local runtime data
+/bin/
+/configs/
+/Redskull/bin/
+/Redskull/obj/
+/Redskull/**/publish/
+/Redskull/**/Publish*/
+
+# Local AI/runtime generated content
+/image/generated/
+/labels/
+/Redskull/labels/
+/Redskull/images/
+/Redskull/configs/
+/Redskull/*.log
+*.log
+
+# NuGet / packages
+packages/
+*.nupkg
+*.snupkg
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Local tool metadata
+.sixth/
