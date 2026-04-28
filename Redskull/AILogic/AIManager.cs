@@ -53,6 +53,15 @@ namespace Redskull.AILogic
         public static event Action<bool>? DynamicModelStatusChanged;
 
         private const int SAVE_FRAME_COOLDOWN_MS = 500;
+        private static readonly bool ENABLE_PERSISTENT_RED_LOCK = true;
+        private const byte RED_LOCK_RED_THRESHOLD = 200;
+        private const byte RED_LOCK_GREEN_THRESHOLD = 50;
+        private const byte RED_LOCK_BLUE_THRESHOLD = 50;
+        private const int RED_LOCK_MIN_PIXELS = 24;
+        private const int RED_LOCK_ACQUIRE_PADDING = 8;
+        private const int RED_LOCK_TRACK_PADDING = 32;
+        private const float RED_LOCK_MAX_ACQUIRE_SIZE_RATIO = 1.8f;
+        private const float TARGET_SELECTION_CONFIDENCE_WINDOW = 0.15f;
 
         private DateTime lastSavedTime = DateTime.MinValue;
         private List<string>? _outputNames;
@@ -79,6 +88,7 @@ namespace Redskull.AILogic
 
         // Sticky-Aim
         private Prediction? _currentTarget = null;
+        private bool _currentTargetIsColorLock = false;
         private int _consecutiveFramesWithoutTarget = 0;
         private const int MAX_FRAMES_WITHOUT_TARGET = 3; // Allow 3 frames of target loss
 
@@ -967,16 +977,39 @@ namespace Redskull.AILogic
                 float fovMaxX = (IMAGE_SIZE + FovSize) / 2.0f;
                 float fovMinY = (IMAGE_SIZE - FovSize) / 2.0f;
                 float fovMaxY = (IMAGE_SIZE + FovSize) / 2.0f;
+                float fovCenter = IMAGE_SIZE / 2.0f;
+                float fovRadius = FovSize / 2.0f;
 
                 //List<double[]> KDpoints;
                 List<Prediction> KDPredictions;
                 using (Benchmark("PrepareKDTreeData"))
                 {
-                    KDPredictions = PrepareKDTreeData(outputTensor, detectionBox, fovMinX, fovMaxX, fovMinY, fovMaxY);
+                    KDPredictions = PrepareKDTreeData(outputTensor, detectionBox, fovMinX, fovMaxX, fovMinY, fovMaxY, fovCenter, fovRadius);
                 }
 
                 if (KDPredictions.Count == 0)
                 {
+                    Prediction? colorLockedPrediction;
+                    using (Benchmark("RedLockDetection"))
+                    {
+                        colorLockedPrediction = TryGetPersistentRedLockPrediction(frame, detectionBox, null);
+                    }
+
+                    if (colorLockedPrediction != null)
+                    {
+                        UpdateDetectionBox(colorLockedPrediction, detectionBox);
+                        SaveFrame(frame, colorLockedPrediction);
+                        return colorLockedPrediction;
+                    }
+
+                    Prediction? fallbackTarget = HandleNoDetections();
+                    if (fallbackTarget != null)
+                    {
+                        UpdateDetectionBox(fallbackTarget, detectionBox);
+                        SaveFrame(frame, fallbackTarget);
+                        return fallbackTarget;
+                    }
+
                     SaveFrame(frame);
                     return null;
                 }
@@ -985,6 +1018,8 @@ namespace Redskull.AILogic
                 Prediction? bestCandidate = null;
                 double bestDistSq = double.MaxValue;
                 double center = IMAGE_SIZE / 2.0;
+                float highestConfidence = KDPredictions.Max(p => p.Confidence);
+                float confidenceFloor = Math.Max(0f, highestConfidence - TARGET_SELECTION_CONFIDENCE_WINDOW);
 
                 // TODO: Optimize this linear search further if needed
                 // TODO: Consider updating KD-Tree and adding options to switch from linear to kd.
@@ -993,6 +1028,11 @@ namespace Redskull.AILogic
                 {
                     foreach (var p in KDPredictions)
                     {
+                        if (p.Confidence < confidenceFloor)
+                        {
+                            continue;
+                        }
+
                         var dx = p.CenterXTranslated * IMAGE_SIZE - center;
                         var dy = p.CenterYTranslated * IMAGE_SIZE - center;
                         double d2 = dx * dx + dy * dy; // dx^2 + dy^2
@@ -1001,7 +1041,32 @@ namespace Redskull.AILogic
                     }
                 }
 
+                if (bestCandidate == null)
+                {
+                    foreach (var p in KDPredictions)
+                    {
+                        var dx = p.CenterXTranslated * IMAGE_SIZE - center;
+                        var dy = p.CenterYTranslated * IMAGE_SIZE - center;
+                        double d2 = dx * dx + dy * dy;
+
+                        if (d2 < bestDistSq) { bestDistSq = d2; bestCandidate = p; }
+                    }
+                }
+
                 Prediction? finalTarget = HandleStickyAim(bestCandidate, KDPredictions);
+                Prediction? colorLockedTarget;
+                using (Benchmark("RedLockDetection"))
+                {
+                    colorLockedTarget = TryGetPersistentRedLockPrediction(frame, detectionBox, finalTarget);
+                }
+
+                if (colorLockedTarget != null)
+                {
+                    UpdateDetectionBox(colorLockedTarget, detectionBox);
+                    SaveFrame(frame, colorLockedTarget);
+                    return colorLockedTarget;
+                }
+
                 if (finalTarget != null)
                 {
                     UpdateDetectionBox(finalTarget, detectionBox);
@@ -1019,12 +1084,270 @@ namespace Redskull.AILogic
             }
         }
 
+        private Prediction? TryGetPersistentRedLockPrediction(Bitmap frame, Rectangle detectionBox, Prediction? referenceTarget)
+        {
+            if (!ENABLE_PERSISTENT_RED_LOCK)
+            {
+                return null;
+            }
+
+            int width = frame.Width;
+            int height = frame.Height;
+            if (width <= 0 || height <= 0)
+            {
+                return null;
+            }
+
+            float activeFovSize = Math.Min((float)Dictionary.sliderSettings["FOV Size"], Math.Min(width, height));
+            float searchRadius = activeFovSize / 2f;
+            float searchCenterX = width / 2f;
+            float searchCenterY = height / 2f;
+
+            bool lockedToColorTarget = _currentTargetIsColorLock && _currentTarget != null;
+            Prediction? activeReferenceTarget = lockedToColorTarget ? _currentTarget : referenceTarget;
+            if (!lockedToColorTarget && activeReferenceTarget == null)
+            {
+                return null;
+            }
+
+            Rectangle searchBounds = Rectangle.Empty;
+            bool restrictToSearchBounds = activeReferenceTarget != null;
+            float referenceX = width / 2f;
+            float referenceY = height / 2f;
+
+            if (activeReferenceTarget != null)
+            {
+                int searchPadding = lockedToColorTarget ? RED_LOCK_TRACK_PADDING : RED_LOCK_ACQUIRE_PADDING;
+                searchBounds = ExpandBounds(Rectangle.Round(activeReferenceTarget.Rectangle), searchPadding, width, height);
+                referenceX = activeReferenceTarget.Rectangle.X + (activeReferenceTarget.Rectangle.Width / 2f);
+                referenceY = activeReferenceTarget.Rectangle.Y + (activeReferenceTarget.Rectangle.Height / 2f);
+            }
+
+            bool[] matches = new bool[width * height];
+            int seedX = -1;
+            int seedY = -1;
+            float bestDistSq = float.MaxValue;
+
+            BitmapData bmpData = frame.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, frame.PixelFormat);
+            try
+            {
+                unsafe
+                {
+                    byte* basePtr = (byte*)bmpData.Scan0;
+                    int stride = Math.Abs(bmpData.Stride);
+                    const int bytesPerPixel = 4;
+
+                    for (int y = 0; y < height; y++)
+                    {
+                        byte* row = basePtr + (long)y * stride;
+                        for (int x = 0; x < width; x++)
+                        {
+                            byte* pixel = row + (x * bytesPerPixel);
+                            bool matched =
+                                pixel[0] <= RED_LOCK_BLUE_THRESHOLD &&
+                                pixel[1] <= RED_LOCK_GREEN_THRESHOLD &&
+                                pixel[2] >= RED_LOCK_RED_THRESHOLD;
+
+                            if (!matched || !IsPointInsideCircle(x, y, searchCenterX, searchCenterY, searchRadius))
+                            {
+                                continue;
+                            }
+
+                            if (restrictToSearchBounds && !searchBounds.Contains(x, y))
+                            {
+                                continue;
+                            }
+
+                            int index = (y * width) + x;
+                            matches[index] = true;
+
+                            float dx = x - referenceX;
+                            float dy = y - referenceY;
+                            float distSq = (dx * dx) + (dy * dy);
+
+                            if (distSq < bestDistSq)
+                            {
+                                bestDistSq = distSq;
+                                seedX = x;
+                                seedY = y;
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                frame.UnlockBits(bmpData);
+            }
+
+            if (seedX < 0 || seedY < 0)
+            {
+                return lockedToColorTarget ? HandleNoDetections() : null;
+            }
+
+            if (!TryBuildRedLockPrediction(matches, width, height, seedX, seedY, detectionBox, out Prediction colorPrediction))
+            {
+                return lockedToColorTarget ? HandleNoDetections() : null;
+            }
+
+            if (!lockedToColorTarget &&
+                activeReferenceTarget != null &&
+                !DoesRedLockMatchReferenceTarget(colorPrediction, activeReferenceTarget))
+            {
+                return null;
+            }
+
+            if (lockedToColorTarget && _currentTarget != null)
+            {
+                _framesWithoutMatch = 0;
+                _consecutiveFramesWithoutTarget = 0;
+                UpdateVelocity(colorPrediction, GetSizeFactor(Math.Max(1f, colorPrediction.Rectangle.Width * colorPrediction.Rectangle.Height)));
+                _targetLockScore = Math.Min(MAX_LOCK_SCORE, _targetLockScore + LOCK_SCORE_GAIN);
+                _currentTarget = colorPrediction;
+                _currentTargetIsColorLock = true;
+                return colorPrediction;
+            }
+
+            return activeReferenceTarget != null ? AcquireNewTarget(colorPrediction, true) : null;
+        }
+
+        private static bool DoesRedLockMatchReferenceTarget(Prediction colorPrediction, Prediction referenceTarget)
+        {
+            RectangleF referenceRect = referenceTarget.Rectangle;
+            RectangleF colorRect = colorPrediction.Rectangle;
+
+            RectangleF expandedReferenceRect = new RectangleF(
+                referenceRect.X - RED_LOCK_ACQUIRE_PADDING,
+                referenceRect.Y - RED_LOCK_ACQUIRE_PADDING,
+                referenceRect.Width + (RED_LOCK_ACQUIRE_PADDING * 2),
+                referenceRect.Height + (RED_LOCK_ACQUIRE_PADDING * 2));
+
+            float colorCenterX = colorRect.X + (colorRect.Width / 2f);
+            float colorCenterY = colorRect.Y + (colorRect.Height / 2f);
+            if (!expandedReferenceRect.Contains(colorCenterX, colorCenterY))
+            {
+                return false;
+            }
+
+            RectangleF intersection = RectangleF.Intersect(referenceRect, colorRect);
+            if (intersection.Width <= 0 || intersection.Height <= 0)
+            {
+                return false;
+            }
+
+            float referenceArea = Math.Max(1f, referenceRect.Width * referenceRect.Height);
+            float colorArea = Math.Max(1f, colorRect.Width * colorRect.Height);
+            if (colorArea > referenceArea * RED_LOCK_MAX_ACQUIRE_SIZE_RATIO)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryBuildRedLockPrediction(
+            bool[] matches,
+            int width,
+            int height,
+            int seedX,
+            int seedY,
+            Rectangle detectionBox,
+            out Prediction prediction)
+        {
+            prediction = null!;
+
+            int seedIndex = (seedY * width) + seedX;
+            if (seedIndex < 0 || seedIndex >= matches.Length || !matches[seedIndex])
+            {
+                return false;
+            }
+
+            bool[] visited = new bool[matches.Length];
+            Queue<int> pending = new Queue<int>();
+            pending.Enqueue(seedIndex);
+            visited[seedIndex] = true;
+
+            int minX = seedX;
+            int maxX = seedX;
+            int minY = seedY;
+            int maxY = seedY;
+            int pixelCount = 0;
+
+            while (pending.Count > 0)
+            {
+                int index = pending.Dequeue();
+                int x = index % width;
+                int y = index / width;
+                pixelCount++;
+
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+
+                for (int ny = Math.Max(0, y - 1); ny <= Math.Min(height - 1, y + 1); ny++)
+                {
+                    for (int nx = Math.Max(0, x - 1); nx <= Math.Min(width - 1, x + 1); nx++)
+                    {
+                        if (nx == x && ny == y)
+                        {
+                            continue;
+                        }
+
+                        int nextIndex = (ny * width) + nx;
+                        if (visited[nextIndex] || !matches[nextIndex])
+                        {
+                            continue;
+                        }
+
+                        visited[nextIndex] = true;
+                        pending.Enqueue(nextIndex);
+                    }
+                }
+            }
+
+            if (pixelCount < RED_LOCK_MIN_PIXELS)
+            {
+                return false;
+            }
+
+            float rectWidth = Math.Max(1, maxX - minX + 1);
+            float rectHeight = Math.Max(1, maxY - minY + 1);
+            float centerX = minX + (rectWidth / 2f);
+            float centerY = minY + (rectHeight / 2f);
+
+            prediction = new Prediction
+            {
+                Rectangle = new RectangleF(minX, minY, rectWidth, rectHeight),
+                Confidence = Math.Min(1f, 0.5f + (pixelCount / 250f)),
+                ClassId = -1,
+                ClassName = "RedLock",
+                CenterXTranslated = centerX / width,
+                CenterYTranslated = centerY / height,
+                ScreenCenterX = detectionBox.Left + centerX,
+                ScreenCenterY = detectionBox.Top + centerY
+            };
+            return true;
+        }
+
+        private static Rectangle ExpandBounds(Rectangle bounds, int padding, int width, int height)
+        {
+            int left = Math.Max(0, bounds.Left - padding);
+            int top = Math.Max(0, bounds.Top - padding);
+            int right = Math.Min(width - 1, bounds.Right + padding);
+            int bottom = Math.Min(height - 1, bounds.Bottom + padding);
+
+            return Rectangle.FromLTRB(left, top, right, bottom);
+        }
+
         private Prediction? HandleStickyAim(Prediction? bestCandidate, List<Prediction> KDPredictions)
         {
             if (!Dictionary.toggleState["Sticky Aim"])
             {
-                _currentTarget = bestCandidate;
-                ResetStickyAimState();
+                if (!_currentTargetIsColorLock)
+                {
+                    ResetStickyAimState();
+                }
                 return bestCandidate;
             }
 
@@ -1046,7 +1369,9 @@ namespace Redskull.AILogic
 
             foreach (var candidate in KDPredictions)
             {
-                float distSq = GetDistanceSq(candidate.ScreenCenterX, candidate.ScreenCenterY, screenCenterX, screenCenterY);
+                float candidateCenterX = candidate.CenterXTranslated * IMAGE_SIZE;
+                float candidateCenterY = candidate.CenterYTranslated * IMAGE_SIZE;
+                float distSq = GetDistanceSq(candidateCenterX, candidateCenterY, screenCenterX, screenCenterY);
                 if (distSq < nearestToCrosshairDistSq)
                 {
                     nearestToCrosshairDistSq = distSq;
@@ -1094,6 +1419,7 @@ namespace Redskull.AILogic
                 UpdateVelocity(aimTarget, sizeFactor);
                 _targetLockScore = Math.Min(MAX_LOCK_SCORE, _targetLockScore + LOCK_SCORE_GAIN);
                 _currentTarget = aimTarget;
+                _currentTargetIsColorLock = false;
                 return aimTarget;
             }
 
@@ -1122,6 +1448,17 @@ namespace Redskull.AILogic
             float dx = x1 - x2;
             float dy = y1 - y2;
             return dx * dx + dy * dy;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsPointInsideCircle(float x, float y, float centerX, float centerY, float radius)
+        {
+            if (radius <= 0)
+            {
+                return false;
+            }
+
+            return GetDistanceSq(x, y, centerX, centerY) <= (radius * radius);
         }
 
         /// <summary>
@@ -1163,13 +1500,14 @@ namespace Redskull.AILogic
             return null;
         }
 
-        private Prediction AcquireNewTarget(Prediction target)
+        private Prediction AcquireNewTarget(Prediction target, bool isColorTarget = false)
         {
             _lastTargetVelocityX = 0f;
             _lastTargetVelocityY = 0f;
             _targetLockScore = LOCK_SCORE_GAIN; // Start with some lock score
             _framesWithoutMatch = 0;
             _currentTarget = target;
+            _currentTargetIsColorLock = isColorTarget;
             return target;
         }
 
@@ -1193,6 +1531,7 @@ namespace Redskull.AILogic
         private void ResetStickyAimState()
         {
             _currentTarget = null;
+            _currentTargetIsColorLock = false;
             _consecutiveFramesWithoutTarget = 0;
             _framesWithoutMatch = 0;
             _lastTargetVelocityX = 0f;
@@ -1214,7 +1553,8 @@ namespace Redskull.AILogic
         private List<Prediction> PrepareKDTreeData(
             Tensor<float> outputTensor,
             Rectangle detectionBox,
-            float fovMinX, float fovMaxX, float fovMinY, float fovMaxY)
+            float fovMinX, float fovMaxX, float fovMinY, float fovMaxY,
+            float fovCenter, float fovRadius)
         {
             float minConfidence = (float)Dictionary.sliderSettings["AI Minimum Confidence"] / 100.0f;
             string selectedClass = Dictionary.dropdownState["Target Class"];
@@ -1267,6 +1607,7 @@ namespace Redskull.AILogic
                 float y_max = y_center + height / 2;
 
                 if (x_min < fovMinX || x_max > fovMaxX || y_min < fovMinY || y_max > fovMaxY) continue;
+                if (!IsPointInsideCircle(x_center, y_center, fovCenter, fovCenter, fovRadius)) continue;
 
                 RectangleF rect = new(x_min, y_min, width, height);
                 Prediction prediction = new()

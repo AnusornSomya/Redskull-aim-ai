@@ -24,6 +24,7 @@ namespace Redskull.Controls
 
         private MainWindow? _mainWindow;
         private ModelMenuControl? _modelMenu;
+        private UISections.ColorPicker? _fovColorPickerInstance;
         private INotifyCollectionChanged? _modelItemsCollection;
         private bool _isInitialized;
         private bool _isSyncingModelSelection;
@@ -107,6 +108,7 @@ namespace Redskull.Controls
             LoadAimAssist();
             LoadPrediction();
             LoadAimConfig();
+            LoadFovConfig();
         }
 
         private void HookModelSelection()
@@ -379,6 +381,93 @@ namespace Redskull.Controls
                 .AddSeparator();
         }
 
+        private void LoadFovConfig()
+        {
+            var uiManager = _mainWindow!.uiManager;
+            var builder = new SectionBuilder(this, RightColumn);
+
+            builder
+                .AddTitle("FOV Config")
+                .AddToggle("FOV", t => uiManager.T_FOV = t,
+                    "Show a circle on screen indicating the detection area.")
+                .AddToggle("Dynamic FOV", t => uiManager.T_DynamicFOV = t,
+                    "Change FOV size when holding a key. Useful for scoping in.")
+                .AddToggle("Third Person Support", t => uiManager.T_ThirdPersonSupport = t,
+                    "Adjust FOV position for third-person camera games.")
+                .AddKeyChanger("Dynamic FOV Keybind", k => uiManager.C_DynamicFOV = k,
+                    "The key to hold for switching to the dynamic FOV size.")
+                .AddDropdown("FOV Style", d =>
+                {
+                    uiManager.D_FOVSTYLE = d;
+
+                    var circleItem = _mainWindow.AddDropdownItem(d, "Circle");
+                    var rectangleItem = _mainWindow.AddDropdownItem(d, "Rectangle");
+
+                    circleItem.Selected += (s, e) => ApplyFovShape(showCircle: true);
+                    rectangleItem.Selected += (s, e) => ApplyFovShape(showCircle: false);
+                }, "Shape of the FOV overlay. Circle is most common.")
+                .AddColorChanger("FOV Color", c =>
+                {
+                    uiManager.CC_FOVColor = c;
+                    c.Reader.Click += (s, e) =>
+                    {
+                        if (_fovColorPickerInstance != null && _fovColorPickerInstance.IsVisible)
+                        {
+                            _fovColorPickerInstance.Activate();
+                            return;
+                        }
+
+                        Color initialColor = Colors.White;
+                        if (c.ColorChangingBorder.Background is SolidColorBrush existingBrush)
+                        {
+                            initialColor = existingBrush.Color;
+                        }
+
+                        _fovColorPickerInstance = new UISections.ColorPicker(initialColor, "FOV Color");
+                        _fovColorPickerInstance.ColorChanged += color =>
+                        {
+                            c.ColorChangingBorder.Background = new SolidColorBrush(color);
+                            Dictionary.colorState["FOV Color"] = $"#{color.A:X2}{color.R:X2}{color.G:X2}{color.B:X2}";
+                            PropertyChanger.PostColor(color);
+                        };
+                        _fovColorPickerInstance.Closed += (sender, args) => _fovColorPickerInstance = null;
+                        _fovColorPickerInstance.Show();
+                    };
+                })
+                .AddSlider("FOV Size", "Size", 1, 1, 10, 640, s =>
+                {
+                    uiManager.S_FOVSize = s;
+                    s.Slider.ValueChanged += (sender, e) =>
+                    {
+                        _mainWindow.ActualFOV = s.Slider.Value;
+                        PropertyChanger.PostNewFOVSize(_mainWindow.ActualFOV);
+                    };
+                }, "Size of the detection area. Smaller = more precise, larger = wider coverage.")
+                .AddSlider("Dynamic FOV Size", "Size", 1, 1, 10, 640, s =>
+                {
+                    uiManager.S_DynamicFOVSize = s;
+                    s.Slider.ValueChanged += (sender, e) =>
+                    {
+                        if (Dictionary.toggleState["Dynamic FOV"])
+                        {
+                            PropertyChanger.PostNewFOVSize(s.Slider.Value);
+                        }
+                    };
+                }, "FOV size when holding the Dynamic FOV key. Usually smaller for scoped aim.")
+                .AddSeparator();
+        }
+
+        private static void ApplyFovShape(bool showCircle)
+        {
+            if (Dictionary.FOVWindow == null)
+            {
+                return;
+            }
+
+            Dictionary.FOVWindow.Circle.Visibility = showCircle ? Visibility.Visible : Visibility.Collapsed;
+            Dictionary.FOVWindow.RectangleShape.Visibility = showCircle ? Visibility.Collapsed : Visibility.Visible;
+        }
+
         private async Task ResetToMouseEvent()
         {
             await Task.Delay(500);
@@ -544,6 +633,14 @@ namespace Redskull.Controls
                 return this;
             }
 
+            public SectionBuilder AddColorChanger(string title, Action<AColorChanger>? configure = null)
+            {
+                var colorChanger = _parent.CreateColorChanger(title);
+                configure?.Invoke(colorChanger);
+                _panel.Children.Add(colorChanger);
+                return this;
+            }
+
             public SectionBuilder AddSeparator()
             {
                 _panel.Children.Add(new ARectangleBottom());
@@ -619,6 +716,14 @@ namespace Redskull.Controls
         }
 
         private ADropdown CreateDropdown(string title, string? tooltip = null) => new(title, title, tooltip);
+
+        private AColorChanger CreateColorChanger(string title)
+        {
+            var colorChanger = new AColorChanger(title);
+            colorChanger.ColorChangingBorder.Background =
+                (Brush)new BrushConverter().ConvertFromString(Dictionary.colorState[title]);
+            return colorChanger;
+        }
     }
 }
 

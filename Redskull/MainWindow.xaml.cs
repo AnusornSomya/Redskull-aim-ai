@@ -290,6 +290,10 @@ namespace Redskull
             ActualFOV = Convert.ToDouble(Dictionary.sliderSettings["FOV Size"]);
             PropertyChanger.PostNewFOVSize(ActualFOV);
             PropertyChanger.PostColor((Color)ColorConverter.ConvertFromString(Dictionary.colorState["FOV Color"].ToString()));
+            bool showCircle = (Dictionary.dropdownState["FOV Style"]?.ToString() ?? "Circle") != "Rectangle";
+            FOVWindow.Circle.Visibility = showCircle ? Visibility.Visible : Visibility.Collapsed;
+            FOVWindow.RectangleShape.Visibility = showCircle ? Visibility.Collapsed : Visibility.Visible;
+            ShowHideFOVWindow();
 
             // Detected player window settings
             var dpSettings = new[]
@@ -424,7 +428,7 @@ namespace Redskull
 
         private void DisableAllFeatures()
         {
-            var features = new[] { "Aim Assist", "FOV", "Show Detected Player" };
+            var features = new[] { "Aim Assist", "Show Detected Player" };
             foreach (var feature in features)
             {
                 Dictionary.toggleState[feature] = false;
@@ -601,12 +605,7 @@ namespace Redskull
             {
                 ["FOV"] = () =>
                 {
-                    FOVWindow.Visibility = GetToggleVisibility(title);
-                    // Force reposition when showing the window
-                    if (Dictionary.toggleState[title])
-                    {
-                        FOVWindow.ForceReposition();
-                    }
+                    ShowHideFOVWindow();
                 },
                 ["Sticky Aim"] = () => UpdateSliderVisibility(uiManager),
                 ["Show Detected Player"] = () =>
@@ -676,6 +675,20 @@ namespace Redskull
             else
             {
                 DPWindow.Hide();
+            }
+        }
+
+        private static void ShowHideFOVWindow()
+        {
+            if (Dictionary.toggleState["FOV"])
+            {
+                FOVWindow.Show();
+                FOVWindow.Visibility = Visibility.Visible;
+                FOVWindow.ForceReposition();
+            }
+            else
+            {
+                FOVWindow.Hide();
             }
         }
 
@@ -878,6 +891,11 @@ namespace Redskull
                     ["Top"] = 1,
                     ["Bottom"] = 2
                 }),
+                (uiManager.D_FOVSTYLE, "FOV Style", new Dictionary<string, int>
+                {
+                    ["Circle"] = 0,
+                    ["Rectangle"] = 1
+                }),
                 // SettingsMenu dropdowns
                 (uiManager.D_MouseMovementMethod, "Mouse Movement Method", new Dictionary<string, int>
                 {
@@ -971,6 +989,7 @@ namespace Redskull
             var sliderConfigs = new[]
             {
                 ("FOV Size", uiManager.S_FOVSize, 640.0),
+                ("Dynamic FOV Size", uiManager.S_DynamicFOVSize, 200.0),
                 ("Mouse Sensitivity (+/-)", uiManager.S_MouseSensitivity, 0.8),
                 ("Mouse Jitter", uiManager.S_MouseJitter, 0.0),
                 ("Sticky Aim Threshold", uiManager.S_StickyAimThreshold, 50),
@@ -1013,6 +1032,11 @@ namespace Redskull
                     ["Center"] = 0,
                     ["Top"] = 1,
                     ["Bottom"] = 2
+                }),
+                ("FOV Style", uiManager.D_FOVSTYLE, new Dictionary<string, int>
+                {
+                    ["Circle"] = 0,
+                    ["Rectangle"] = 1
                 }),
 
                 ("Mouse Movement Method", uiManager.D_MouseMovementMethod, new Dictionary<string, int>
